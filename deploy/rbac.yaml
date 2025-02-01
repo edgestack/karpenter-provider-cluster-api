@@ -1,0 +1,174 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: karpenter-autoscaler
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: karpenter-autoscaler
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - nodes
+      - configmaps
+      - secrets
+      - persistentvolumeclaims
+      - persistentvolumes
+      - replicationcontrollers
+      - namespaces
+    verbs:
+      - get
+      - watch
+      - list
+  - apiGroups:
+      - "apps"
+    resources:
+      - daemonsets
+      - deployments
+      - replicasets
+      - statefulsets
+    verbs:
+      - watch
+      - list
+  - apiGroups:
+      - "storage.k8s.io"
+    resources:
+      - volumeattachments
+      - csinodes
+    verbs:
+      - get
+      - watch
+      - list
+  - apiGroups:
+      - "policy"
+    resources:
+      - poddisruptionbudgets
+    verbs:
+      - get
+      - watch
+      - list
+  - apiGroups:
+      - "karpenter.sh"
+    resources:
+      - nodeclaims
+      - nodepools
+      - nodepools/status
+      - nodeclaims/status
+    verbs:
+      - get
+      - list
+      - watch
+  # Write
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - patch
+      - create
+  - apiGroups:
+      - "cluster.x-k8s.io"
+    resources:
+      - machinedeployments
+      - machinepools
+      - machines
+      - machinesets
+    verbs:
+      - get
+      - list
+      - update
+      - patch
+      - watch
+  - apiGroups:
+      - "karpenter.cluster.x-k8s.io"
+    resources:
+      - clusterapinodeclasses
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - "apiextensions.k8s.io"
+    resources:
+      - customresourcedefinitions
+    verbs:
+      - update
+      - list
+      - watch
+  - apiGroups:
+      - "coordination.k8s.io"
+    resources:
+      - leases
+    verbs:
+      - create
+      - delete
+      - update
+      - patch
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - "karpenter.sh"
+    resources:
+      - nodeclaims
+      - nodeclaims/status
+    verbs:
+      - create
+      - delete
+      - update
+      - patch
+  - apiGroups:
+      - "karpenter.sh"
+    resources:
+      - nodepools
+      - nodepools/status
+    verbs:
+      - update
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - update
+      - delete
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - pods/eviction
+    verbs:
+      - create
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - delete
+  - apiGroups:
+      - "karpenter.cluster.x-k8s.io"
+    resources:
+      - clusterapinodeclasses
+      - clusterapinodeclasses/status
+    verbs:
+      - patch
+      - update
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: karpenter-autoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: karpenter-autoscaler
+subjects:
+- kind: ServiceAccount
+  name: karpenter-autoscaler
+  namespace: default

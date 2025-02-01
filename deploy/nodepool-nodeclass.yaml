@@ -1,0 +1,28 @@
+---
+apiVersion: karpenter.cluster.x-k8s.io/v1alpha1
+kind: ClusterAPINodeClass
+metadata:
+  name: nc-default
+spec: {}
+
+---
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  template:
+    spec:
+      expireAfter: 720h
+      requirements:
+        - key: "kubernetes.io/arch"
+          operator: In
+          values: ["amd64"]
+      nodeClassRef:
+        group: karpenter.cluster.x-k8s.io
+        kind: ClusterAPINodeClass
+        name: nc-default
+  disruption:
+    budgets:
+      - nodes: 10%
+    consolidationPolicy: WhenUnderutilized

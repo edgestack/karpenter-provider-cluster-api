@@ -24,13 +24,14 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	corecluster "sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/apis"
 	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/apis/v1alpha1"
 	clusterapi "sigs.k8s.io/karpenter-provider-cluster-api/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/operator/options"
 	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/providers/machine"
 	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/providers/machinedeployment"
+	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/providers/cluster"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/operator"
 )
@@ -51,6 +52,7 @@ type Operator struct {
 
 	MachineProvider           machine.Provider
 	MachineDeploymentProvider machinedeployment.Provider
+	ClusterProvider           cluster.Provider
 }
 
 func NewOperator(ctx context.Context, operator *operator.Operator) (context.Context, *Operator) {
@@ -61,11 +63,13 @@ func NewOperator(ctx context.Context, operator *operator.Operator) (context.Cont
 
 	machineProvider := machine.NewDefaultProvider(ctx, mgmtCluster)
 	machineDeploymentProvider := machinedeployment.NewDefaultProvider(ctx, mgmtCluster)
+	clusterProvider := cluster.NewDefaultProvider(ctx, mgmtCluster)
 
 	return ctx, &Operator{
 		Operator:                  operator,
 		MachineProvider:           machineProvider,
 		MachineDeploymentProvider: machineDeploymentProvider,
+		ClusterProvider:           clusterProvider,
 	}
 }
 
@@ -75,7 +79,7 @@ func buildManagementClusterKubeClient(ctx context.Context, operator *operator.Op
 		if err != nil {
 			return nil, err
 		}
-		mgmtCluster, err := cluster.New(clusterAPIKubeConfig, func(o *cluster.Options) {
+		mgmtCluster, err := corecluster.New(clusterAPIKubeConfig, func(o *corecluster.Options) {
 			o.Scheme = operator.GetScheme()
 		})
 		if err != nil {

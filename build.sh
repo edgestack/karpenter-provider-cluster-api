@@ -23,6 +23,7 @@ PLATFORMS=linux/amd64,linux/arm64
 # shellcheck disable=SC2086 # inteneded splitting of CONTAINER_BUILDER
 ${CONTAINER_CLI} ${CONTAINER_BUILDER} \
   --platform ${PLATFORMS} \
+  --no-cache \
   ${PUSH} \
   -f Dockerfile \
   -t "${REPO}"/karpenter-provider-cluster-api:"${TAG}" .

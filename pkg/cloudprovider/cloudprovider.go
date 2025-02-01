@@ -38,6 +38,7 @@ import (
 
 	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/apis/v1alpha1"
 	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/providers"
+	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/providers/cluster"
 	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/providers/machine"
 	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/providers/machinedeployment"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
@@ -58,11 +59,12 @@ const (
 	maxPodsKey      = "capacity.cluster-autoscaler.kubernetes.io/maxPods"
 )
 
-func NewCloudProvider(ctx context.Context, kubeClient client.Client, machineProvider machine.Provider, machineDeploymentProvider machinedeployment.Provider) *CloudProvider {
+func NewCloudProvider(ctx context.Context, kubeClient client.Client, machineProvider machine.Provider, machineDeploymentProvider machinedeployment.Provider, clusterProvider cluster.Provider) *CloudProvider {
 	return &CloudProvider{
 		kubeClient:                kubeClient,
 		machineProvider:           machineProvider,
 		machineDeploymentProvider: machineDeploymentProvider,
+		clusterProvider:           clusterProvider,
 	}
 }
 
@@ -76,6 +78,7 @@ type ClusterAPIInstanceType struct {
 type CloudProvider struct {
 	kubeClient                client.Client
 	accessLock                sync.Mutex
+	clusterProvider           cluster.Provider
 	machineProvider           machine.Provider
 	machineDeploymentProvider machinedeployment.Provider
 }
@@ -119,42 +122,80 @@ func (c *CloudProvider) Create(ctx context.Context, nodeClaim *karpv1.NodeClaim)
 		return nil, fmt.Errorf("cannot satisfy create, unable to find MachineDeployment %q for InstanceType %q: %w", selectedInstanceType.MachineDeploymentName, selectedInstanceType.Name, err)
 	}
 	originalReplicas := *machineDeployment.Spec.Replicas
-	machineDeployment.Spec.Replicas = ptr.To(originalReplicas + 1)
-	if err := c.machineDeploymentProvider.Update(ctx, machineDeployment); err != nil {
-		return nil, fmt.Errorf("cannot satisfy create, unable to update MachineDeployment %q replicas: %w", machineDeployment.Name, err)
-	}
 
-	// TODO (elmiko) it would be nice to have a more elegant solution to the asynchronous machine creation.
-	// Initially, it appeared that we could have a Machine controller which could reconcile new Machines and
-	// then associate them with NodeClaims by using a sentinel value for the Provider ID. But, this may not
-	// work as we expect since the karpenter core can use the Provider ID as a key into one of its internal caches.
-	// For now, the method of waiting for the Machine seemed straightforward although it does make the `Create` method a blocking call.
-	// Try to find an unclaimed Machine resource for 1 minute.
-	machine, err := c.pollForUnclaimedMachineInMachineDeploymentWithTimeout(ctx, machineDeployment, time.Minute)
+	clusterName := machineDeployment.Spec.ClusterName
+	clusterNamespace := machineDeployment.Namespace
+
+	// Extract ClusterClassName by removing the known clusterName prefix
+	clusterClassName := strings.TrimPrefix(machineDeployment.Name, clusterName + "-")
+	newReplicaCount := ptr.To(originalReplicas + 1)
+	cluster, err := c.clusterProvider.Get(ctx, clusterName, clusterNamespace)
+
 	if err != nil {
-		// unable to find a Machine for the NodeClaim, this could be due to timeout or error, but the replica count needs to be reset.
-		// TODO (elmiko) this could probably use improvement to make it more resilient to errors.
-		machineDeployment.Spec.Replicas = ptr.To(originalReplicas)
-		if err := c.machineDeploymentProvider.Update(ctx, machineDeployment); err != nil {
-			return nil, fmt.Errorf("cannot satisfy create, error while recovering from failure to find an unclaimed Machine: %w", err)
-		}
-		return nil, fmt.Errorf("cannot satisfy create, unable to find an unclaimed Machine for MachineDeployment %q: %w", machineDeployment.Name, err)
+                return nil, fmt.Errorf("cannot satisfy create, unable to find Cluster %q: %w", clusterName, err)
 	}
 
-	// now that we have a Machine for the NodeClaim, we label it as a karpenter member
-	labels := machine.GetLabels()
-	labels[providers.NodePoolMemberLabel] = ""
-	machine.SetLabels(labels)
-	if err := c.machineProvider.Update(ctx, machine); err != nil {
-		// if we can't update the Machine with the member label, we need to unwind the addition
-		// TODO (elmiko) add more logic here to fix the error, if we are in this state it's not clear how to fix,
-		// since we have a Machine, we should be reducing the replicas and annotating the Machine for deletion.
-		return nil, fmt.Errorf("cannot satisfy create, unable to label Machine %q as a member: %w", machine.Name, err)
+	// Find the corresponding machineDeployment in Cluster topology
+	updated := false
+	for i, md := range cluster.Spec.Topology.Workers.MachineDeployments {
+		if md.Name == clusterClassName {
+			fmt.Printf("Found matching MachineDeployment: %s, updating replicas to %d\n", md.Name, newReplicaCount)
+			cluster.Spec.Topology.Workers.MachineDeployments[i].Replicas = newReplicaCount
+			updated = true
+			break
+		}
+	}
+
+	if !updated {
+		return nil, fmt.Errorf("MachineDeployment %s not found in Cluster %s", clusterClassName, clusterName)
+	} else {
+		if err := c.clusterProvider.Update(ctx, cluster); err != nil {
+			return nil, fmt.Errorf("cannot satisfy create, unable to update MachineDeployment Class %q on Cluster %q with replicas: %w", clusterClassName, clusterName, err)
+		}
+	}
+
+	machineDeployment.Spec.Replicas = newReplicaCount
+
+	// Retry updating the Machine to avoid conflicts
+	retryInterval := 200 * time.Millisecond
+	maxRetries := 10
+	globalMachineName := ""
+
+	for i := 0; i < maxRetries; i++ {
+		// Fetch the latest Machine object to avoid stale resourceVersion
+		machine, err := c.pollForUnclaimedMachineInMachineDeploymentWithTimeout(ctx, machineDeployment, time.Minute)
+		if err != nil {
+			fmt.Printf("failed to re-fetch Machine %q: %w", machine.Name, err)
+			continue
+		} else {
+			globalMachineName = machine.Name
+		}
+
+		// Update labels
+		labels := machine.GetLabels()
+		labels[providers.NodePoolMemberLabel] = ""
+		machine.SetLabels(labels)
+
+		// Attempt to update the Machine
+		err = c.machineProvider.Update(ctx, machine)
+		if err == nil {
+			break // Update successful
+		}
+
+		if err != nil {
+			fmt.Printf("unable to label Machine %q as a member: %w, no worry, we will retry...", machine.Name, err)
+		}
+
+		// If conflict, wait and retry with exponential backoff
+		time.Sleep(retryInterval)
+		retryInterval *= 2 // Exponential backoff
 	}
 
 	//  fill out nodeclaim with details
-	createdNodeClaim := createNodeClaimFromMachineDeployment(machineDeployment)
-	createdNodeClaim.Status.ProviderID = *machine.Spec.ProviderID
+        createdNodeClaim := createNodeClaimFromMachineDeployment(machineDeployment)
+
+        // (FIXME) we hard-code the provider ID for kubevirt for now
+        createdNodeClaim.Status.ProviderID = "kubevirt://" + globalMachineName
 
 	return createdNodeClaim, nil
 }
@@ -206,15 +247,41 @@ func (c *CloudProvider) Delete(ctx context.Context, nodeClaim *karpv1.NodeClaim)
 	//   and reduce machinedeployment replicas
 	updatedReplicas := *machineDeployment.Spec.Replicas - 1
 	machineDeployment.Spec.Replicas = ptr.To(updatedReplicas)
-	err = c.machineDeploymentProvider.Update(ctx, machineDeployment)
-	if err != nil {
-		// cleanup the machine delete annotation so we don't affect future replica changes
-		if err := c.machineProvider.RemoveDeleteAnnotation(ctx, machine); err != nil {
-			return fmt.Errorf("unable to delete NodeClaim %q, cannot remove delete annotation for Machine %q during cleanup: %w", nodeClaim.Name, machine.Name, err)
-		}
 
-		return fmt.Errorf("unable to delete NodeClaim %q, cannot update MachineDeployment %q replicas: %w", nodeClaim.Name, machineDeployment.Name, err)
-	}
+	clusterName := machineDeployment.Spec.ClusterName
+        clusterNamespace := machineDeployment.Namespace
+
+	// Extract ClusterClassName by removing the known clusterName prefix
+        clusterClassName := strings.TrimPrefix(machineDeployment.Name, clusterName + "-")
+        cluster, err := c.clusterProvider.Get(ctx, clusterName, clusterNamespace)
+
+        if err != nil {
+                return fmt.Errorf("unable to delete NodeClaim %q, unable to find Cluster %q: %w", nodeClaim.Name, clusterName, err)
+        }
+
+        // Find the corresponding machineDeployment in Cluster topology
+        updated := false
+        for i, md := range cluster.Spec.Topology.Workers.MachineDeployments {
+                if md.Name == clusterClassName {
+                        fmt.Printf("Found matching MachineDeployment: %s, updating replicas to %d\n", md.Name, ptr.To(updatedReplicas))
+                        cluster.Spec.Topology.Workers.MachineDeployments[i].Replicas = ptr.To(updatedReplicas)
+                        updated = true
+                        break
+                }
+        }
+
+        if !updated {
+		// cleanup the machine delete annotation so we don't affect future replica changes
+                if err := c.machineProvider.RemoveDeleteAnnotation(ctx, machine); err != nil {
+                        return fmt.Errorf("unable to delete NodeClaim %q, cannot remove delete annotation for Machine %q during cleanup: %w", nodeClaim.Name, machine.Name, err)
+                }
+
+                return fmt.Errorf("MachineDeployment %s not found in Cluster %s", clusterClassName, clusterName)
+        } else {
+                if err := c.clusterProvider.Update(ctx, cluster); err != nil {
+                        return fmt.Errorf("unable to delete NodeClaim %q, unable to update MachineDeployment Class %q on Cluster %q with replicas: %w", nodeClaim.Name, clusterClassName, clusterName, err)
+                }
+        }
 
 	return nil
 }

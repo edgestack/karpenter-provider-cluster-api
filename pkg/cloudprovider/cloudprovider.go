@@ -17,14 +17,13 @@ limitations under the License.
 package cloudprovider
 
 import (
-	"cmp"
 	"context"
 	_ "embed"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
+	"sort"
 
 	"github.com/awslabs/operatorpkg/status"
 	"github.com/samber/lo"
@@ -108,13 +107,9 @@ func (c *CloudProvider) Create(ctx context.Context, nodeClaim *karpv1.NodeClaim)
 		return nil, cloudprovider.NewInsufficientCapacityError(fmt.Errorf("cannot satisfy create, no compatible instance types found"))
 	}
 
-	// TODO (elmiko) if multiple instance types are found to be compatible we need to select one.
-	// for now, we sort by resource name and take the first in the list. In the future, this should
-	// be an option or something more useful like minimum size or cost.
-	slices.SortFunc(compatibleInstanceTypes, func(a, b *ClusterAPIInstanceType) int {
-		return cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
-	})
-	selectedInstanceType := compatibleInstanceTypes[0]
+	// sort the instance type wrt the resource type in ascending order
+	sortedInstanceTypes := sortInstanceTypes(compatibleInstanceTypes)
+	selectedInstanceType := sortedInstanceTypes[0]
 
 	// once scalable resource is identified, increase replicas
 	machineDeployment, err := c.machineDeploymentProvider.Get(ctx, selectedInstanceType.MachineDeploymentName, selectedInstanceType.MachineDeploymentNamespace)
@@ -711,4 +706,46 @@ func zoneLabelFromLabels(labels map[string]string) string {
 	}
 
 	return zone
+}
+
+func sortInstanceTypes(instanceTypes []*ClusterAPIInstanceType) []*ClusterAPIInstanceType {
+	// Create a copy to avoid modifying the original slice
+	sortedInstances := make([]*ClusterAPIInstanceType, len(instanceTypes))
+	copy(sortedInstances, instanceTypes)
+
+	sort.Slice(sortedInstances, func(i, j int) bool {
+		return compareInstances(sortedInstances[i], sortedInstances[j])
+	})
+
+	return sortedInstances
+}
+
+// compareInstances compares two InstanceType objects based on CPU, Memory, Pods, and Ephemeral Storage (ascending).
+func compareInstances(a, b *ClusterAPIInstanceType) bool {
+	priorityResources := []corev1.ResourceName{
+		corev1.ResourceCPU,              // Highest priority
+		corev1.ResourceMemory,           // Second priority (handles Gi, GB, Mi, MB)
+		corev1.ResourcePods,             // Third priority
+		corev1.ResourceEphemeralStorage, // Fourth priority (handles Gi, GB, Mi, MB)
+	}
+
+	for _, res := range priorityResources {
+		valueA, existsA := a.Capacity[res]
+		valueB, existsB := b.Capacity[res]
+
+		// Treat missing values as zero (if not present)
+		if !existsA {
+			valueA = resource.MustParse("0")
+		}
+		if !existsB {
+			valueB = resource.MustParse("0")
+		}
+
+		// Compare values using Quantity.Cmp() (-1 if A < B, 0 if A == B, 1 if A > B)
+		if cmp := valueA.Cmp(valueB); cmp != 0 {
+			return cmp < 0 // Sort in ascending order
+		}
+	}
+
+	return false // If all values are equal, maintain original order
 }

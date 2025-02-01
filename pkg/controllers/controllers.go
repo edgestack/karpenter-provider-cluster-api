@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/apis/v1alpha1"
+	nodeclaimgarbagecollection "sigs.k8s.io/karpenter-provider-cluster-api/pkg/controllers/nodeclaim/garbagecollection"
 	nodeclasshash "sigs.k8s.io/karpenter-provider-cluster-api/pkg/controllers/nodeclass/hash"
 	nodeclassstatus "sigs.k8s.io/karpenter-provider-cluster-api/pkg/controllers/nodeclass/status"
 )
@@ -38,6 +39,7 @@ func NewControllers(ctx context.Context, mgr manager.Manager, kubeClient client.
 	controllers := []controller.Controller{
 		nodeclasshash.NewController(kubeClient),
 		nodeclassstatus.NewController(kubeClient),
+		nodeclaimgarbagecollection.NewController(kubeClient, cloudProvider),
 
 		// TODO: nodeclaim tagging
 		status.NewController[*v1alpha1.ClusterAPINodeClass](kubeClient, mgr.GetEventRecorderFor("karpenter")),

@@ -24,6 +24,7 @@ import (
 )
 
 var (
+	Group = "sigs.k8s.io"
 	// Builder includes all types within the apis package
 	Builder = runtime.NewSchemeBuilder(
 		v1alpha1.SchemeBuilder.AddToScheme,

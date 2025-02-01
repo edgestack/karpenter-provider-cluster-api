@@ -17,6 +17,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+	"github.com/samber/lo"
+	"github.com/mitchellh/hashstructure/v2"
 	"github.com/awslabs/operatorpkg/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -72,4 +75,19 @@ func (nc *ClusterAPINodeClass) GetConditions() []status.Condition {
 
 func (nc *ClusterAPINodeClass) SetConditions(conditions []status.Condition) {
 	nc.Status.Conditions = conditions
+}
+
+// We need to bump the ClusterAPINodeClassHashVersion when we make an update to the ClusterAPINodeClass CRD under these conditions:
+// 1. A field changes its default value for an existing field that is already hashed
+// 2. A field is added to the hash calculation with an already-set value
+// 3. A field is removed from the hash calculations
+const ClusterAPINodeClassHashVersion = "v1"
+
+// TODO: add hash tests
+func (in *ClusterAPINodeClass) Hash() string {
+	return fmt.Sprint(lo.Must(hashstructure.Hash(in.Spec, hashstructure.FormatV2, &hashstructure.HashOptions{
+		SlicesAsSets:    true,
+		IgnoreZeroValue: true,
+		ZeroNil:         true,
+	})))
 }

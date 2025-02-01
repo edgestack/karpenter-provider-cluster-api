@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/apis"
 )
 
 func init() {
@@ -38,4 +39,7 @@ var (
 	RestrictedLabelDomains = []string{
 		Group,
 	}
+
+	AnnotationClusterAPINodeClassHash        = apis.Group + "/capinodeclass-hash"
+	AnnotationClusterAPINodeClassHashVersion = apis.Group + "/capinodeclass-hash-version"
 )

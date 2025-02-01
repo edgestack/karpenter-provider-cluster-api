@@ -29,12 +29,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"sigs.k8s.io/karpenter-provider-cluster-api/pkg/apis/v1alpha1"
+	nodeclasshash "sigs.k8s.io/karpenter-provider-cluster-api/pkg/controllers/nodeclass/hash"
 	nodeclassstatus "sigs.k8s.io/karpenter-provider-cluster-api/pkg/controllers/nodeclass/status"
 )
 
 func NewControllers(ctx context.Context, mgr manager.Manager, kubeClient client.Client, recorder events.Recorder,
 	cloudProvider cloudprovider.CloudProvider) []controller.Controller {
 	controllers := []controller.Controller{
+		nodeclasshash.NewController(kubeClient),
 		nodeclassstatus.NewController(kubeClient),
 
 		// TODO: nodeclaim tagging
